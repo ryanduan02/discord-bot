@@ -1,17 +1,41 @@
 import Foundation
 import EventKit
 
-func formatDate(_ date: Date) -> String {
+// MARK: - JSON Models
+
+struct DayEvents: Encodable {
+    let date: String          // YYYY-MM-DD in local timezone
+    let events: [EventItem]
+}
+
+struct EventItem: Encodable {
+    let title: String
+    let start: String?        // ISO8601 (nil for all-day if you prefer)
+    let end: String?          // ISO8601
+    let allDay: Bool
+    let location: String?
+}
+
+func iso8601(_ date: Date) -> String {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f.string(from: date)
+}
+
+func yyyyMMddLocal(_ date: Date) -> String {
     let f = DateFormatter()
-    f.dateStyle = .none
-    f.timeStyle = .short
+    f.calendar = .current
+    f.timeZone = .current
+    f.dateFormat = "yyyy-MM-dd"
     return f.string(from: date)
 }
 
 let store = EKEventStore()
-
 let sem = DispatchSemaphore(value: 0)
+
 store.requestFullAccessToEvents { granted, error in
+    defer { sem.signal() }
+
     if let error = error {
         fputs("Error requesting access: \(error)\n", stderr)
         exit(1)
@@ -21,25 +45,35 @@ store.requestFullAccessToEvents { granted, error in
         exit(2)
     }
 
-    let calendar = Calendar.current
-    let startOfDay = calendar.startOfDay(for: Date())
-    let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay)!
+    let cal = Calendar.current
+    let startOfDay = cal.startOfDay(for: Date())
+    let endOfDay = cal.date(byAdding: .day, value: 1, to: startOfDay)!
 
     let predicate = store.predicateForEvents(withStart: startOfDay, end: endOfDay, calendars: nil)
-    let events = store.events(matching: predicate).sorted { $0.startDate < $1.startDate }
+    let ekEvents = store.events(matching: predicate).sorted { $0.startDate < $1.startDate }
 
-    if events.isEmpty {
-        print("No events today.")
-    } else {
-        for e in events {
-            let allDay = e.isAllDay ? " (all-day)" : ""
-            let start = e.isAllDay ? "All day" : formatDate(e.startDate)
-            let end = e.isAllDay ? "" : "–\(formatDate(e.endDate))"
-            let loc = (e.location?.isEmpty == false) ? " @ \(e.location!)" : ""
-            print("\(start)\(end)\(allDay): \(e.title ?? "(No title)")\(loc)")
+    let items: [EventItem] = ekEvents.map { e in
+        let title = e.title ?? "(No title)"
+        let loc = (e.location?.isEmpty == false) ? e.location : nil
+
+        if e.isAllDay {
+            return EventItem(title: title, start: nil, end: nil, allDay: true, location: loc)
+        } else {
+            return EventItem(title: title, start: iso8601(e.startDate), end: iso8601(e.endDate), allDay: false, location: loc)
         }
     }
-    sem.signal()
+
+    let payload = DayEvents(date: yyyyMMddLocal(startOfDay), events: items)
+
+    do {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [] // keep it compact for piping
+        let data = try encoder.encode(payload)
+        print(String(data: data, encoding: .utf8) ?? "{}")
+    } catch {
+        fputs("Error encoding JSON: \(error)\n", stderr)
+        exit(3)
+    }
 }
 
 _ = sem.wait(timeout: .distantFuture)

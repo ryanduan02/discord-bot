@@ -4,14 +4,23 @@ import subprocess
 import sys
 import requests
 
+from dotenv import load_dotenv
+from pathlib import Path
+
+BASE = Path(__file__).resolve().parent
+load_dotenv(BASE / "env" / "discord_hook.env", override=True)
+
 def main():
-    webhook = os.environ.get("DISCORD_WEBHOOK_URL")
+    webhook = (os.environ.get("DISCORD_WEBHOOK_URL") or "").strip()
+    print("Using webhook repr:", repr(webhook))
+
     if not webhook:
         print("Missing DISCORD_WEBHOOK_URL environment variable.", file=sys.stderr)
         sys.exit(2)
 
     # Run Swift producer
-    out = subprocess.check_output(["./build/calendar"], text=True)
+    swift_bin = BASE / "build" / "calendar"
+    out = subprocess.check_output([str(swift_bin)], text=True)
     data = json.loads(out)
 
     events = data.get("events", [])
@@ -27,7 +36,6 @@ def main():
             if e.get("allDay"):
                 when = "All day"
             else:
-                # ISO timestamps; keep as-is or parse/format if you want prettier output
                 when = f'{e.get("start")}–{e.get("end")}'
 
             lines.append(f"{when}: {title}{loc_part}")
@@ -36,7 +44,6 @@ def main():
 
     resp = requests.post(webhook, json={"content": content}, timeout=15)
 
-    # 204 is a valid response
     if resp.status_code not in (200, 204):
         print(f"Webhook failed: HTTP {resp.status_code}\n{resp.text}", file=sys.stderr)
         sys.exit(1)
